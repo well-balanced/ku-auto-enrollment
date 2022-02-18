@@ -1,8 +1,8 @@
 import { chromium, Frame, Page } from "playwright";
 
 require("dotenv").config();
-const ENROLL_DURATION = 200;
-const LIMIT = 50;
+const MIN_ENROLL_DURATION = 400;
+const MAX_ENROLL_DURATION = 500;
 const LOADING_DURATION = 1000;
 
 async function autoEnrollment() {
@@ -10,49 +10,32 @@ async function autoEnrollment() {
   const username = process.env.USERNAME;
   const password = process.env.PASSWORD;
 
+  const browser = await chromium.launch({
+    devtools: process.env.NODE_ENV !== "production",
+  });
+
+  const page = await browser.newPage();
+  await page.goto("https://sugang.konkuk.ac.kr/", {
+    waitUntil: "networkidle",
+  });
+  await login(page, username, password);
+  await wait(LOADING_DURATION);
+
+  const realFrame = filterFakeFrame(page);
+  await entryEnrollmentPage(realFrame);
+  await wait(LOADING_DURATION);
+
+  let retryCount = 0;
   while (true) {
-    const browser = await chromium.launch({
-      devtools: process.env.NODE_ENV !== "production",
-    });
-
-    try {
-      const page = await browser.newPage();
-      await page.goto("https://sugang.konkuk.ac.kr/", {
-        waitUntil: "networkidle",
-      });
-      await login(page, username, password);
-      await wait(LOADING_DURATION);
-
-      const realFrame = filterFakeFrame(page);
-      await entryEnrollmentPage(realFrame);
-      await wait(LOADING_DURATION);
-
-      let retryCount = 0;
-      while (retryCount < LIMIT) {
-        try {
-          for (let subjectId of subjects) {
-            await enrollCource(page, subjectId);
-          }
-        } catch (e) {
-          console.log(`Server closed: ${e}`);
-          process.exit(-1);
-        }
-        retryCount += 1;
-      }
-    } catch (e) {
-      console.log(`Server closed: ${e}`);
+    for (let subjectId of subjects) {
+      await enrollCource(realFrame, subjectId);
+      retryCount += 1;
     }
-
-    await browser.close();
   }
 }
 
 function wait(duration: number) {
   return new Promise((resolve) => setTimeout(resolve, duration));
-}
-
-function log(message: string) {
-  console.log(`[${new Date().toLocaleString()}] ${message}`);
 }
 
 async function login(
@@ -84,12 +67,27 @@ function filterFakeFrame(page: Page) {
   return realFrame;
 }
 
-async function enrollCource(page: Page, subjectId: string) {
-  const input = await page.waitForSelector("[name=strSbjtId]");
-  await input?.evaluate((e: HTMLInputElement) => (e.value = ""));
-  await wait(ENROLL_DURATION);
-  await input?.type(subjectId);
-  await page.evaluate(`window.actEvent('set')`);
+function getRandomDuraition(minDuration: number, maxDuration: number) {
+  const min = Math.ceil(minDuration);
+  const max = Math.floor(maxDuration);
+  return Math.floor(Math.random() * (max - min) + min);
 }
 
-autoEnrollment();
+async function enrollCource(frame: Frame, subjectId: string) {
+  const input = await frame.waitForSelector("[name=fSbjtId]");
+  await input?.evaluate((e: HTMLInputElement) => (e.value = ""));
+  await input?.type(subjectId);
+  const enrollButton = await frame.$(".btn-main");
+  const duration = getRandomDuraition(MIN_ENROLL_DURATION, MAX_ENROLL_DURATION);
+  await wait(duration);
+  await enrollButton?.click();
+  const confirmButtonWrapper = await frame.waitForSelector(".jconfirm-buttons");
+  confirmButtonWrapper.click();
+}
+
+try {
+  autoEnrollment();
+} catch (e) {
+  console.log(`Server closed: ${e}`);
+  process.exit(-1);
+}
